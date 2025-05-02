@@ -1,17 +1,22 @@
 name: Auto GEE Indices
+
 on:
   schedule:
     - cron: '0 2 */14 * *'    # toutes les 2 semaines à 02:00 UTC
-  workflow_dispatch:        # permet de lancer manuellement
+  workflow_dispatch:          # permet de lancer manuellement
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Installer dépendances
         run: pip install earthengine-api google-auth google-api-python-client paramiko
+
       - name: Décoder la clé de service base64
-  	run: echo "${{ secrets.GEE_SA_KEY }}" | base64 -d > sa-key.json
+        run: echo "${{ secrets.GEE_SA_KEY }}" | base64 -d > sa-key.json
+
       - name: Lancer l’automatisation
         env:
           SA_KEY_PATH:       sa-key.json
