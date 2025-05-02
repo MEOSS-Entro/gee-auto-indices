@@ -24,6 +24,8 @@ from email.mime.multipart import MIMEMultipart
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from paramiko import Transport, SFTPClient
+from googleapiclient.http import MediaIoBaseDownload
+import io
 
 # -----------------------------------------------------------------------------
 # 1) Chargement des variables d’environnement (à configurer en GitHub Secrets)
@@ -180,25 +182,55 @@ def list_drive_tifs(drive_svc, folder_id):
         if not token: break
     return files
 
+# def sftp_transfer(drive_svc, files):
+#     transport = Transport((SFTP_HOST, SFTP_PORT))
+#     transport.connect(username=SFTP_USER, password=SFTP_PASS)
+#     sftp = SFTPClient.from_transport(transport)
+#     sent, errors = [], []
+#     for f in files:
+#         nm, fid = f['name'], f['id']
+#         local = f"/tmp/{nm}"
+#         # Download
+#         with open(local, 'wb') as fh:
+#             drive_svc.files().get_media(fileId=fid).execute_to(fh)
+#         # Upload
+#         try:
+#             sftp.put(local, os.path.join(SFTP_DEST_FOLDER, nm))
+#             sent.append(nm)
+#         except Exception as e:
+#             errors.append((nm,str(e)))
+#         finally:
+#             os.remove(local)
+#     sftp.close()
+#     transport.close()
+#     return sent, errors
+
 def sftp_transfer(drive_svc, files):
     transport = Transport((SFTP_HOST, SFTP_PORT))
     transport.connect(username=SFTP_USER, password=SFTP_PASS)
     sftp = SFTPClient.from_transport(transport)
     sent, errors = [], []
+
     for f in files:
         nm, fid = f['name'], f['id']
-        local = f"/tmp/{nm}"
-        # Download
-        with open(local, 'wb') as fh:
-            drive_svc.files().get_media(fileId=fid).execute_to(fh)
-        # Upload
+        local_path = f"/tmp/{nm}"
+        fh = io.FileIO(local_path, 'wb')
+        request = drive_svc.files().get_media(fileId=fid)
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
         try:
-            sftp.put(local, os.path.join(SFTP_DEST_FOLDER, nm))
+            while not done:
+                status, done = downloader.next_chunk()
+            # Upload
+            sftp.put(local_path, os.path.join(SFTP_DEST_FOLDER, nm))
             sent.append(nm)
         except Exception as e:
-            errors.append((nm,str(e)))
+            errors.append((nm, str(e)))
         finally:
-            os.remove(local)
+            fh.close()
+            if os.path.exists(local_path):
+                os.remove(local_path)
+
     sftp.close()
     transport.close()
     return sent, errors
