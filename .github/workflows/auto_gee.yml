@@ -1,44 +1,28 @@
-name: GEE Automation
-
+name: Auto GEE Indices
 on:
   schedule:
-    - cron: '0 6 */14 * *'  # toutes les 2 semaines
-  workflow_dispatch:
-
+    - cron: '0 2 */14 * *'    # toutes les 2 semaines à 02:00 UTC
+  workflow_dispatch:        # permet de lancer manuellement
 jobs:
-  run-script:
+  run:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Restore sa-key.json
+      - uses: actions/checkout@v3
+      - name: Installer dépendances
+        run: pip install earthengine-api google-auth google-api-python-client paramiko
+      - name: Préparer la clé de service
+        run: echo "${{ secrets.GEE_SA_KEY }}" > sa-key.json
+      - name: Lancer l’automatisation
         env:
-          SA_KEY_BASE64: ${{ secrets.SA_KEY_BASE64 }}
-        run: |
-          echo "$SA_KEY_BASE64" | base64 -d > sa-key.json
-
-      - name: Run main script
-        env:
-          SA_KEY_PATH: 'sa-key.json'
-          SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_PORT: ${{ secrets.SFTP_PORT }}
-          SFTP_USER: ${{ secrets.SFTP_USER }}
-          SFTP_PASS: ${{ secrets.SFTP_PASS }}
-          SFTP_DEST_FOLDER: ${{ secrets.SFTP_DEST_FOLDER }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
-          WAIT_TIME: ${{ secrets.WAIT_TIME }}
-        run: python script_automate.py
+          SA_KEY_PATH:       sa-key.json
+          SFTP_HOST:         ${{ secrets.SFTP_HOST }}
+          SFTP_USER:         ${{ secrets.SFTP_USER }}
+          SFTP_PASS:         ${{ secrets.SFTP_PASS }}
+          SFTP_DEST_FOLDER:  ${{ secrets.SFTP_DEST_FOLDER }}
+          SMTP_SERVER:       ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT:         ${{ secrets.SMTP_PORT }}
+          SMTP_USER:         ${{ secrets.SMTP_USER }}
+          SMTP_PASS:         ${{ secrets.SMTP_PASS }}
+          ALERT_EMAILS:      ${{ secrets.ALERT_EMAILS }}
+          WAIT_TIME:         ${{ secrets.WAIT_TIME }}
+        run: python3 script_automate.py
