@@ -1,0 +1,4 @@
+earthengine-api
+pydrive2
+google-api-python-client
+paramiko

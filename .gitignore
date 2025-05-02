@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Clés et tokens sensibles
+sa-key.json
+credentials.json
+client_secrets.json
+gee_credentials.json
+
+# Fichiers temporaires
+/tmp/
