@@ -180,7 +180,7 @@ def list_drive_tifs(drive_svc, folder_id):
         if not token: break
     return files
 
-def sftp_transfer(files):
+def sftp_transfer(drive_svc, files):
     transport = Transport((SFTP_HOST, SFTP_PORT))
     transport.connect(username=SFTP_USER, password=SFTP_PASS)
     sftp = SFTPClient.from_transport(transport)
@@ -236,7 +236,7 @@ if __name__ == '__main__':
         tifs = list_drive_tifs(drive_svc, folder_id)
         report_lines.append(f"{len(tifs)} TIF prêts sur Drive.")
 
-        transferred, errors = sftp_transfer(tifs)
+        transferred, errors = sftp_transfer(drive_svc, tifs)
         report_lines.append(f"{len(transferred)} fichier(s) transféré(s):\n- " + "\n- ".join(transferred))
         if errors:
             report_lines.append(f"{len(errors)} erreur(s) SFTP:\n" +
