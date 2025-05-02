@@ -29,10 +29,10 @@ from paramiko import Transport, SFTPClient
 # 1) Chargement des variables d’environnement (à configurer en GitHub Secrets)
 # -----------------------------------------------------------------------------
 # Clé JSON du compte de service (Earth Engine + Drive)
-SA_KEY_PATH       = 'meossbrli-457914-e1e65fbbc91d.json'
+SA_KEY_PATH       = os.getenv('SA_KEY_PATH', 'sa-key.json')
 
 # GEE / Drive
-ASSET_SITES       = 'projects/ee-abbessi1/assets/Sites_BRLi_2Km'
+ASSET_SITES       = 'projects/gee-flow-meoss/assets/Sites_BRLi_2Km'
 SITE_NAME         = 'Rahad-2'
 TILE_ID           = '36PWA'
 DATE_START        = '2025-04-07'
