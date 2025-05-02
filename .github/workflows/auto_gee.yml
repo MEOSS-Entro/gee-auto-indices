@@ -41,4 +41,4 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
           WAIT_TIME: ${{ secrets.WAIT_TIME }}
-        run: python main_script.py
+        run: python script_automate.py
