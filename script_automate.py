@@ -40,7 +40,7 @@ POLL_INTERVAL = 30
 # -----------------------------------------------------------------------------
 
 with open('sa-key.json', 'w') as f:
-    f.write(os.environ['GEE_SA_KEY'])
+    f.write(os.environ['GEE_SA_KEY_RAW'])
 
 EE_KEY = 'sa-key.json'
 SFTP_HOST = os.environ['SFTP_HOST']
