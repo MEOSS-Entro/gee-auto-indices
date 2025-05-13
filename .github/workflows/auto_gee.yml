@@ -1,21 +1,26 @@
 name: Auto GEE Indices
+
 on:
   schedule:
-    - cron: '0 2 */14 * *'
-  workflow_dispatch:
+    - cron: '0 2 */14 * *'  # Tous les 14 jours à 02h UTC
+  workflow_dispatch:        # Lancement manuel possible
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v3
-      - name: Dépendances
+
+      - name: Installer les dépendances
         run: pip install earthengine-api pydrive2 paramiko
-      - name: SA key
-        run: echo "${{ secrets.GEE_SA_KEY }}" > sa-key.json
-      - name: Run script
+
+      - name: Générer sa-key.json depuis SA_KEY_BASE64
+        run: echo "${{ secrets.SA_KEY_BASE64 }}" | base64 -d > sa-key.json
+
+      - name: Lancer le script Python
         env:
-          GEE_SA_KEY:        ${{ secrets.GEE_SA_KEY }}
+          GEE_SA_KEY:        ${{ secrets.SA_KEY_BASE64 }}
           SFTP_HOST:         ${{ secrets.SFTP_HOST }}
           SFTP_PORT:         ${{ secrets.SFTP_PORT }}
           SFTP_USER:         ${{ secrets.SFTP_USER }}
