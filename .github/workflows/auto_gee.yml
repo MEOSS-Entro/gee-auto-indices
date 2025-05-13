@@ -1,4 +1,5 @@
 name: Auto GEE Indices
+
 on:
   schedule:
     - cron: '0 2 */14 * *'
@@ -11,14 +12,16 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Installer les dépendances
-        run: pip install earthengine-api pydrive2 paramiko
+        run: pip install earthengine-api pydrive2 paramiko google-api-python-client
 
-      - name: Écrire la clé de service
-        run: echo "${{ secrets.GEE_SA_KEY }}" > sa-key.json
+      - name: Écrire la clé de service (contenu brut)
+        run: |
+          echo "${{ secrets.GEE_SA_KEY_RAW }}" > sa-key.json
+          cat sa-key.json
 
       - name: Lancer le script Python
         env:
-          GEE_SA_KEY:        ${{ secrets.GEE_SA_KEY }}
+          SA_KEY_PATH:       sa-key.json
           SFTP_HOST:         ${{ secrets.SFTP_HOST }}
           SFTP_PORT:         ${{ secrets.SFTP_PORT }}
           SFTP_USER:         ${{ secrets.SFTP_USER }}
