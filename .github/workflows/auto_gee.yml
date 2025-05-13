@@ -14,7 +14,7 @@ jobs:
         run: pip install earthengine-api pydrive2 paramiko
 
       - name: Écrire la clé de service
-        run: echo "${{ secrets.GEE_SA_KEY }}" > sa-key.json
+        run: echo "${{ secrets.GEE_SA_KEY }}" | base64 -d > sa-key.json
 
       - name: Lancer le script Python
         env:
