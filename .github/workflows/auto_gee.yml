@@ -2,18 +2,18 @@ name: Auto GEE Indices
 
 on:
   schedule:
-    - cron: '0 2 */14 * *'      # toutes les 2 semaines à 02:00 UTC
+    - cron: '0 2 */14 * *'        # toutes les 2 semaines
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v3
 
       - name: Installer les dépendances
-        run: pip install earthengine-api pydrive2 paramiko
+        run: |
+          pip install earthengine-api google-auth google-api-python-client paramiko
 
       - name: Écrire sa-key.json depuis le secret Base64
         run: echo "${{ secrets.SA_KEY_BASE64 }}" | base64 -d > sa-key.json
