@@ -19,8 +19,8 @@ from email.mime.multipart import MIMEMultipart
 
 # ---------- Paramètres généraux ----------
 SITE_IDS = [
-    'projects/meossbrli-457914/assets/koga',
-    'projects/meossbrli-457914/assets/renk'
+    'projects/gee-flow-meoss/assets/koga',
+    'projects/gee-flow-meoss/assets/renk'
 ]
 INDICES = ['NDVI','EVI','LAI','NDRE','MSAVI','SIWSI','NMDI']
 EXPORT_SCALE, EXPORT_CRS = 10, 'EPSG:4326'
