@@ -192,4 +192,4 @@ msg['Subject']="GEE Indices : " + ("Succès" if not all_errs else "Succès (avec
 msg.attach(MIMEText("\n\n".join(body),'plain'))
 with smtplib.SMTP(SMTP_SRV,SMTP_PORT) as s:
     s.starttls(); s.login(SMTP_USR,SMTP_PWD); s.send_message(msg)
-print(✉️ Rapport envoyé")
+print(Rapport envoyé")
