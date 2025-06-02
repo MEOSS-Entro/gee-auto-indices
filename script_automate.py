@@ -34,7 +34,7 @@ SFTP_HOST = os.environ["SFTP_HOST"]
 SFTP_PORT = int(os.getenv("SFTP_PORT", 22))
 SFTP_USER = os.environ["SFTP_USER"]
 SFTP_PASS = os.environ["SFTP_PASS"]
-SFTP_DEST = os.environ["SFTP_DEST_FOLDER"]
+SFTP_DEST = "/Data/PROD"
 
 SMTP_SRV = os.environ["SMTP_SERVER"]
 SMTP_PORT = int(os.environ["SMTP_PORT"])
