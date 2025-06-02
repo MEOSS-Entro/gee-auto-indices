@@ -44,7 +44,7 @@ EMAILS = os.environ["ALERT_EMAILS"].split(",")
 
 # Durées (peuvent être surchargées par secrets GitHub)
 WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))  # 4 h max attente EE
-PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   600))   # 10 min par export
+PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))   # 10 min par export
 FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))   # 30 min .tif Drive
 POLL_EVERY    = 30                                        # s
 
@@ -62,7 +62,11 @@ drv = build("drive", "v3", credentials=creds, cache_discovery=False)
 
 # ─────────── Paramètres de traitement ───────────────────────────────────────
 SITE_IDS = [
+    'projects/gee-flow-meoss/assets/koga',
     'projects/gee-flow-meoss/assets/kibimba',
+    'projects/gee-flow-meoss/assets/kanyonyomba',
+    'projects/gee-flow-meoss/assets/renk',
+    'projects/gee-flow-meoss/assets/rahad',
 ]
 
 INDICES = ["NDVI", "EVI", "LAI", "NDRE", "MSAVI", "SIWSI", "NMDI"]
