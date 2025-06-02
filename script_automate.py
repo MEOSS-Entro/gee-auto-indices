@@ -78,7 +78,10 @@ def sftp_mkdirs(sftp, path):
         try: sftp.listdir(cur)
         except IOError: sftp.mkdir(cur)
 
-# ---------- Lancement par site ----------
+# ---------- Génération des composites ----------
+INDICES_ORDER = ['NDVI','EVI','LAI','NDRE','MSAVI','SIWSI','NMDI']
+empty_img = ee.Image.constant([-32767] * len(INDICES_ORDER)).rename(INDICES_ORDER).updateMask(ee.Image.constant(0))
+
 all_sent, all_errs = [], []
 START_DATE = ee.Date('2025-03-25')
 END_DATE   = ee.Date('2025-05-25')
@@ -89,7 +92,6 @@ for site_id in SITE_IDS:
     AOI_GEOM = AOI.geometry()
     SITE_NAME = AOI.get('Nom').getInfo() or site_id.split('/')[-1]
 
-    # Nettoyage dossier Drive
     q = (f"name='{SITE_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false")
     res = drv_list(drv, q=q, fields='files(id)')
     if not res:
@@ -103,42 +105,55 @@ for site_id in SITE_IDS:
     step = 10; period = 30
     n_days = END_DATE.difference(START_DATE, 'day').getInfo()
     tasks = []
+
+    def mask_cloud_shadow(img):
+        prob = ee.Image(img.get('cloud_prob')).select('probability')
+        qa = img.select('QA60')
+        mask = prob.lt(CLOUD_PROB_THRESHOLD).And(qa.bitwiseAnd(1 << 10).eq(0)).And(qa.bitwiseAnd(1 << 11).eq(0))
+        return img.updateMask(mask).copyProperties(img, ['system:time_start'])
+
+    def add_all_indices(img):
+        b = {f'B{i}': img.select(f'B{i}').divide(1e4).toFloat() for i in [2,3,4,5,6,8,11,12]}
+        ndvi = b['B8'].subtract(b['B4']).divide(b['B8'].add(b['B4'])).rename('NDVI')
+        evi = ee.Image(2.5).multiply(b['B8'].subtract(b['B4']).divide(b['B8'].add(b['B4'].multiply(6)).add(b['B2'].multiply(-7.5)).add(1))).rename('EVI')
+        lai = evi.multiply(3.618).subtract(0.118).rename('LAI')
+        ndre = b['B8'].subtract(b['B5']).divide(b['B8'].add(b['B5'])).rename('NDRE')
+        msavi = b['B8'].multiply(2).add(1).subtract((b['B8'].multiply(2).add(1)).pow(2).subtract(b['B8'].subtract(b['B4']).multiply(8)).sqrt()).divide(2).rename('MSAVI')
+        siwsi = b['B11'].subtract(b['B8']).divide(b['B11'].add(b['B8'])).rename('SIWSI')
+        nmdi = b['B8'].subtract(b['B11'].subtract(b['B12'])).divide(b['B8'].add(b['B11'].subtract(b['B12']))).rename('NMDI')
+        return img.addBands([ndvi,evi,lai,ndre,msavi,siwsi,nmdi])
+
+    def dekad_composite(start, end, geom):
+        s2sr = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(geom).filterDate(start, end)
+        s2prob = ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY').filterBounds(geom).filterDate(start, end)
+
+        join_filter = ee.Filter.equals(leftField='system:index', rightField='system:index')
+        join = ee.Join.saveFirst(matchKey='cloud_prob')
+        joined = ee.ImageCollection(join.apply(s2sr, s2prob, join_filter))
+
+        col = joined.map(mask_cloud_shadow).map(add_all_indices).map(
+            lambda im: im.addBands(ee.Image(im.get('cloud_prob')).select('probability').multiply(-1).add(100).rename('cloud_score'))
+        )
+
+        return ee.Image(ee.Algorithms.If(
+            col.size().gt(0),
+            col.qualityMosaic('cloud_score').select(INDICES_ORDER),
+            empty_img
+        )).set('system:time_start', start.millis())
+
     for offset in range(0, n_days - period + 1, step):
-        d1 = START_DATE.advance(offset,'day')
-        d2 = d1.advance(10,'day')
-        d3 = d2.advance(10,'day')
-        d4 = d3.advance(10,'day')
-        mid = d1.advance(15,'day')
+        d1 = START_DATE.advance(offset, 'day')
+        d2 = d1.advance(10, 'day')
+        d3 = d2.advance(10, 'day')
+        d4 = d3.advance(10, 'day')
+        mid = d1.advance(15, 'day')
 
-        def dekad(start, end):
-            s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(AOI_GEOM).filterDate(start, end)
-            s2c= ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY').filterBounds(AOI_GEOM).filterDate(start, end)
-            join = ee.Join.saveFirst('cloud_prob').apply(s2, s2c, ee.Filter.equals('system:index','system:index'))
-
-            def process(img):
-                img=ee.Image(img); cp=ee.Image(img.get('cloud_prob')).select('probability')
-                mask = cp.lt(CLOUD_PROB_THRESHOLD).And(img.select('QA60').bitwiseAnd(1<<10).eq(0)).And(img.select('QA60').bitwiseAnd(1<<11).eq(0))
-                return img.updateMask(mask).copyProperties(img,['system:time_start'])
-
-            def indices(img):
-                b = {f'B{i}': img.select(f'B{i}').divide(1e4) for i in [2,3,4,5,6,8,11,12]}
-                ndvi  = b['B8'].subtract(b['B4']).divide(b['B8'].add(b['B4'])).rename('NDVI')
-                evi   = ee.Image(2.5).multiply(b['B8'].subtract(b['B4']).divide(b['B8'].add(b['B4'].multiply(6)).add(b['B2'].multiply(-7.5)).add(1))).rename('EVI')
-                lai   = evi.multiply(3.618).subtract(0.118).rename('LAI')
-                ndre  = b['B8'].subtract(b['B5']).divide(b['B8'].add(b['B5'])).rename('NDRE')
-                msavi = b['B8'].multiply(2).add(1).subtract((b['B8'].multiply(2).add(1)).pow(2).subtract(b['B8'].subtract(b['B4']).multiply(8)).sqrt()).divide(2).rename('MSAVI')
-                siwsi = b['B11'].subtract(b['B8']).divide(b['B11'].add(b['B8'])).rename('SIWSI')
-                nmdi  = b['B8'].subtract(b['B11'].subtract(b['B12'])).divide(b['B8'].add(b['B11'].subtract(b['B12']))).rename('NMDI')
-                return img.addBands([ndvi,evi,lai,ndre,msavi,siwsi,nmdi])
-
-            col = ee.ImageCollection(join).map(process).map(indices)
-            return col.qualityMosaic('cloud_prob').select(INDICES)
-
-        dek1 = dekad(d1, d2)
-        dek2 = dekad(d2, d3)
-        dek3 = dekad(d3, d4)
+        dek1 = dekad_composite(d1, d2, AOI_GEOM)
+        dek2 = dekad_composite(d2, d3, AOI_GEOM)
+        dek3 = dekad_composite(d3, d4, AOI_GEOM)
         interp = dek1.add(dek3).divide(2)
         filled = dek2.where(dek2.mask().Not(), interp)
+
         bounded = filled.select(['NDVI','EVI','NDRE','MSAVI','SIWSI','NMDI']).clamp(-1, 1)
         bounded = bounded.addBands(filled.select('LAI').clamp(-1, 7))
         final = bounded.multiply(10000).round().toInt16().clip(AOI_GEOM).unmask(-32768)
@@ -152,6 +167,7 @@ for site_id in SITE_IDS:
                 region=AOI_GEOM, scale=EXPORT_SCALE, crs=EXPORT_CRS, maxPixels=1e13)
             t.start(); tasks.append(t)
 
+    # Polling
     pend={t.status()['description']:t for t in tasks}; t0=time.time()
     while pend and time.time()-t0<WAIT_TIME:
         for d,t in list(pend.items()):
@@ -191,4 +207,4 @@ msg['Subject']="GEE Indices : " + ("Succès" if not all_errs else "Succès (avec
 msg.attach(MIMEText("\n\n".join(body),'plain'))
 with smtplib.SMTP(SMTP_SRV,SMTP_PORT) as s:
     s.starttls(); s.login(SMTP_USR,SMTP_PWD); s.send_message(msg)
-print("Rapport envoyé ✅")
+print("Rapport envoyé")
