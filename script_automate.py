@@ -19,16 +19,13 @@ from email.mime.multipart import MIMEMultipart
 
 # ---------- Paramètres généraux ----------
 SITE_IDS = [
-    'projects/gee-flow-meoss/assets/koga',
-    'projects/gee-flow-meoss/assets/renk',
-    'projects/gee-flow-meoss/assets/kanyonyomba',
-    'projects/gee-flow-meoss/assets/kibimba',
-    'projects/gee-flow-meoss/assets/rahad'
+    'projects/meossbrli-457914/assets/koga',
+    'projects/meossbrli-457914/assets/renk'
 ]
 INDICES = ['NDVI','EVI','LAI','NDRE','MSAVI','SIWSI','NMDI']
 EXPORT_SCALE, EXPORT_CRS = 10, 'EPSG:4326'
 CLOUD_PROB_THRESHOLD = 40
-WAIT_TIME  = int(os.getenv('WAIT_TIME', 3600))
+WAIT_TIME  = int(os.getenv('WAIT_TIME', 7200))  # ⬅ temps max de polling augmenté
 FILE_TIMEOUT = 600
 
 # ---------- Secrets / env ----------
@@ -128,10 +125,16 @@ for site_id in SITE_IDS:
         s2prob = ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY').filterBounds(geom).filterDate(start, end)
 
         join_filter = ee.Filter.equals(leftField='system:index', rightField='system:index')
-        join = ee.Join.saveFirst(matchKey='cloud_prob')
-        joined = ee.ImageCollection(join.apply(s2sr, s2prob, join_filter))
+        joined = ee.Join.inner().apply(s2sr, s2prob, join_filter)
 
-        col = joined.map(mask_cloud_shadow).map(add_all_indices).map(
+        def merge_features(feat):
+            left = ee.Image(ee.Feature(feat.get('primary')).get('system:time_start'))
+            right = ee.Image(ee.Feature(feat.get('secondary')))
+            return left.set('cloud_prob', right)
+
+        merged = ee.ImageCollection(joined.map(merge_features))
+
+        col = merged.map(mask_cloud_shadow).map(add_all_indices).map(
             lambda im: im.addBands(ee.Image(im.get('cloud_prob')).select('probability').multiply(-1).add(100).rename('cloud_score'))
         )
 
@@ -167,7 +170,6 @@ for site_id in SITE_IDS:
                 region=AOI_GEOM, scale=EXPORT_SCALE, crs=EXPORT_CRS, maxPixels=1e13)
             t.start(); tasks.append(t)
 
-    # Polling
     pend={t.status()['description']:t for t in tasks}; t0=time.time()
     while pend and time.time()-t0<WAIT_TIME:
         for d,t in list(pend.items()):
@@ -207,4 +209,4 @@ msg['Subject']="GEE Indices : " + ("Succès" if not all_errs else "Succès (avec
 msg.attach(MIMEText("\n\n".join(body),'plain'))
 with smtplib.SMTP(SMTP_SRV,SMTP_PORT) as s:
     s.starttls(); s.login(SMTP_USR,SMTP_PWD); s.send_message(msg)
-print("Rapport envoyé")
+print("Rapport envoyé ✅")
