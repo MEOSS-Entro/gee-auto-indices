@@ -2,7 +2,7 @@ name: Auto GEE Indices
 
 on:
   schedule:
-    - cron: '0 2 */14 * *'        # toutes les 2 semaines
+    - cron: '0 2 3,13,23 * *'        # tous les 10 jours
   workflow_dispatch:
 
 jobs:
