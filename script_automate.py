@@ -2,11 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 GEE  ->  Drive  ->  SFTP  (multi-sites, 7 indices)
-– génère les composites 10 jours (NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI)
-– START_DATE = aujourd’hui - 30 jours ; END_DATE = aujourd’hui (UTC)
-– vide le dossier Drive de chaque site avant les exports
-– conserve les .tif sur Drive après transfert SFTP
-– envoie un mail récapitulatif
 """
 
 import os
@@ -26,28 +21,24 @@ from paramiko import Transport, SFTPClient
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# ─────────── Secrets et variables d’environnement ───────────────────────────
+# ─────────── Secrets et variables d’environnement ─────────────
 SA_KEY_PATH = os.getenv("SA_KEY_PATH", "sa-key.json")
-
 SFTP_HOST = os.environ["SFTP_HOST"]
 SFTP_PORT = int(os.getenv("SFTP_PORT", 22))
 SFTP_USER = os.environ["SFTP_USER"]
 SFTP_PASS = os.environ["SFTP_PASS"]
 SFTP_DEST = "/Data/PROD"
-
 SMTP_SRV = os.environ["SMTP_SERVER"]
 SMTP_PORT = int(os.environ["SMTP_PORT"])
 SMTP_USR = os.environ["SMTP_USER"]
 SMTP_PWD = os.environ["SMTP_PASS"]
 EMAILS = os.environ["ALERT_EMAILS"].split(",")
+WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))
+PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))
+FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))
+POLL_EVERY    = 30
 
-# Durées (peuvent être surchargées par secrets GitHub)
-WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))  # 4 h max attente EE
-PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))   # 10 min par export
-FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))   # 30 min .tif Drive
-POLL_EVERY    = 30                                        # s
-
-# ─────────── Auth Earth Engine + Drive ──────────────────────────────────────
+# ─────────── Auth Earth Engine + Drive ─────────────
 creds = service_account.Credentials.from_service_account_file(
     SA_KEY_PATH,
     scopes=[
@@ -59,7 +50,7 @@ creds = service_account.Credentials.from_service_account_file(
 ee.Initialize(credentials=creds, project=creds.project_id)
 drv = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-# ─────────── Paramètres de traitement ───────────────────────────────────────
+# ─────────── Paramètres de traitement ─────────────
 SITE_IDS = [
     'projects/gee-flow-meoss/assets/koga',
     'projects/gee-flow-meoss/assets/kibimba',
@@ -67,24 +58,20 @@ SITE_IDS = [
     'projects/gee-flow-meoss/assets/renk',
     'projects/gee-flow-meoss/assets/rahad',
 ]
-
 INDICES = ["NDVI", "EVI", "LAI", "NDRE", "MSAVI", "SIWSI", "NMDI"]
 CLOUD_PROB_THRESHOLD = 40
 EXPORT_SCALE = 10
 EXPORT_CRS = "EPSG:4326"
-
-# Période glissante : dernier mois
 today_utc = datetime.now(timezone.utc).date()
-END_DATE  = ee.Date(str(today_utc))                       # J
-START_DATE = ee.Date(str(today_utc - timedelta(days=30))) # J-30
-
+END_DATE  = ee.Date(str(today_utc))
+START_DATE = ee.Date(str(today_utc - timedelta(days=30)))
 empty_img = (
     ee.Image.constant([-32767] * len(INDICES))
     .rename(INDICES)
     .updateMask(ee.Image.constant(0))
 )
 
-# ─────────── utilitaires Drive (retry réseau) ───────────────────────────────
+# ─────────── utilitaires Drive (retry réseau) ─────────────
 def _retry(fun, *a, **k):
     for i in range(1, 7):
         try:
@@ -104,7 +91,7 @@ def drv_del(fid):
         _retry(lambda: drv.files().delete(fileId=fid).execute())
     except HttpError as e:
         if e.resp.status not in (403, 404):
-            raise  # sinon on ignore (pas propriétaire etc.)
+            raise
 
 def drv_download(fid, path):
     with open(path, "wb") as h:
@@ -114,7 +101,7 @@ def drv_download(fid, path):
         while not done:
             _, done = _retry(dl.next_chunk)
 
-# ─────────── Fonctions Earth Engine ─────────────────────────────────────────
+# ─────────── Fonctions Earth Engine ─────────────
 def mask_cloud_shadow(img):
     prob = ee.Image(img.get("cloud_prob")).select("probability")
     qa = img.select("QA60")
@@ -192,7 +179,7 @@ def dekad_composite(start, end, geom):
         )
     ).set("system:time_start", start.millis())
 
-# ─────────── Aide SFTP ──────────────────────────────────────────────────────
+# ─────────── Aide SFTP ─────────────
 def sftp_mkdirs(sftp, path):
     cur = ""
     for part in [p for p in path.split("/") if p]:
@@ -202,7 +189,7 @@ def sftp_mkdirs(sftp, path):
         except IOError:
             sftp.mkdir(cur)
 
-# ─────────── Boucle principale par site ─────────────────────────────────────
+# ─────────── Boucle principale par site ─────────────
 all_sent, all_errs, total_tasks = [], [], 0
 
 for site_id in SITE_IDS:
@@ -251,22 +238,24 @@ for site_id in SITE_IDS:
             filled.select(["NDVI", "EVI", "NDRE", "MSAVI", "SIWSI", "NMDI"]).clamp(-1, 1)
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
-        img_clip = bounded.multiply(10000).round().toInt16().clip(geom)  # rapide, juste la zone du site
-        # On exporte sur une grande emprise (définie par 'region', ex: bounding box du site)
-        export_region = geom.bounds().coordinates().getInfo() # on prend la bbox
-        # On crée un masque binaire du site à la même résolution
-        site_mask = ee.Image.constant(1).clip(geom).rename('mask').reproject(EXPORT_CRS, None, EXPORT_SCALE)
-        # On force à -32768 hors site dans l'emprise raster demandée
-        img_final = img_clip.where(site_mask.neq(1), -32768)
+        # Clip sur la géométrie du site (calcul rapide, comme original)
+        img_clip = bounded.multiply(10000).round().toInt16().clip(geom)
+        # Préparation du masque pour NoData
+        site_mask = ee.Image.constant(1).clip(geom).selfMask()
+        # On utilise .unmask(-32768) pour avoir -32768 hors du site (sur bbox)
+        # On exporte sur la bounding box du site
+        export_region = geom.bounds().getInfo()['coordinates']
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
+            # On applique le masque et l’unmask à la toute fin, bande par bande
+            img_band = img_clip.select(band).updateMask(site_mask).unmask(-32768)
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
-                image=img_final.select(band),
+                image=img_band,
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
-                region=export_region,  # bbox étendue, pas juste geom
+                region=export_region,
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
@@ -336,7 +325,7 @@ for site_id in SITE_IDS:
     all_errs.extend(errs)
     print(f"{site} : {len(sent)} fichiers transférés (Drive conservé)")
 
-# ─────────── Mail de synthèse ───────────────────────────────────────────────
+# ─────────── Mail de synthèse ─────────────
 body = [
     f"{total_tasks} exports lancés sur {len(SITE_IDS)} sites.",
     f"{len(all_sent)} fichiers transférés :\n- " + "\n- ".join(all_sent),
