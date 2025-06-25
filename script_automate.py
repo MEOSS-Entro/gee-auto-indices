@@ -251,22 +251,22 @@ for site_id in SITE_IDS:
             filled.select(["NDVI", "EVI", "NDRE", "MSAVI", "SIWSI", "NMDI"]).clamp(-1, 1)
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
-        img_base = bounded.multiply(10000).round().toInt16()
-        # ---- MODIF ICI : appliquer le masque site et nodata en dehors ----
-        mask_geom = img_base.geometry().intersection(geom, 1)  # emprise commune, mais .geometry() d'une image c'est bounding box
-        # Créer un raster masque binaire (1=site, 0=hors site)
+        img_clip = bounded.multiply(10000).round().toInt16().clip(geom)  # rapide, juste la zone du site
+        # On exporte sur une grande emprise (définie par 'region', ex: bounding box du site)
+        export_region = geom.bounds().coordinates().getInfo() # on prend la bbox
+        # On crée un masque binaire du site à la même résolution
         site_mask = ee.Image.constant(1).clip(geom).rename('mask').reproject(EXPORT_CRS, None, EXPORT_SCALE)
-        img = img_base.where(site_mask.neq(1), -32768)
-        # ---------------------------------------------------------------
+        # On force à -32768 hors site dans l'emprise raster demandée
+        img_final = img_clip.where(site_mask.neq(1), -32768)
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
-                image=img.select(band),
+                image=img_final.select(band),
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
-                region=None,  # emprise native (ne pas restreindre à geom)
+                region=export_region,  # bbox étendue, pas juste geom
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
