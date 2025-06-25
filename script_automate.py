@@ -238,17 +238,16 @@ for site_id in SITE_IDS:
             filled.select(["NDVI", "EVI", "NDRE", "MSAVI", "SIWSI", "NMDI"]).clamp(-1, 1)
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
-        # Clip sur la géométrie du site (calcul rapide, comme original)
+        # Clip sur la géométrie du site pour calcul rapide
         img_clip = bounded.multiply(10000).round().toInt16().clip(geom)
-        # Préparation du masque pour NoData
-        site_mask = ee.Image.constant(1).clip(geom).selfMask()
-        # On utilise .unmask(-32768) pour avoir -32768 hors du site (sur bbox)
+        # Préparation du masque pour NoData explicitement
+        mask_geom = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
+        date_str = mid.format("YYYYMMdd").getInfo()
         # On exporte sur la bounding box du site
         export_region = geom.bounds().getInfo()['coordinates']
-        date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
-            # On applique le masque et l’unmask à la toute fin, bande par bande
-            img_band = img_clip.select(band).updateMask(site_mask).unmask(-32768)
+            # -32768 hors du site, valeur réelle sur le site, rien d'autre
+            img_band = img_clip.select(band).where(mask_geom.neq(1), -32768)
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
                 image=img_band,
