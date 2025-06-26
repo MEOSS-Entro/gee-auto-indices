@@ -2,6 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 GEE  ->  Drive  ->  SFTP  (multi-sites, 7 indices)
+
+– génère les composites 10 jours (NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI)
+– START_DATE = aujourd’hui - 30 jours ; END_DATE = aujourd’hui (UTC)
+– vide le dossier Drive de chaque site avant les exports
+– conserve les .tif sur Drive après transfert SFTP
+– envoie un mail récapitulatif
 """
 
 import os
@@ -23,20 +29,24 @@ from email.mime.multipart import MIMEMultipart
 
 # ─────────── Secrets et variables d’environnement ─────────────
 SA_KEY_PATH = os.getenv("SA_KEY_PATH", "sa-key.json")
+
 SFTP_HOST = os.environ["SFTP_HOST"]
 SFTP_PORT = int(os.getenv("SFTP_PORT", 22))
 SFTP_USER = os.environ["SFTP_USER"]
 SFTP_PASS = os.environ["SFTP_PASS"]
 SFTP_DEST = "/Data/PROD"
+
 SMTP_SRV = os.environ["SMTP_SERVER"]
 SMTP_PORT = int(os.environ["SMTP_PORT"])
 SMTP_USR = os.environ["SMTP_USER"]
 SMTP_PWD = os.environ["SMTP_PASS"]
 EMAILS = os.environ["ALERT_EMAILS"].split(",")
-WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))
-PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))
-FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))
-POLL_EVERY    = 30
+
+# Durées (peuvent être surchargées par secrets GitHub)
+WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))  # 4 h max attente EE
+PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))   # 10 min par export
+FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))   # 30 min .tif Drive
+POLL_EVERY    = 30                                        # s
 
 # ─────────── Auth Earth Engine + Drive ─────────────
 creds = service_account.Credentials.from_service_account_file(
@@ -58,13 +68,17 @@ SITE_IDS = [
     'projects/gee-flow-meoss/assets/renk',
     'projects/gee-flow-meoss/assets/rahad',
 ]
+
 INDICES = ["NDVI", "EVI", "LAI", "NDRE", "MSAVI", "SIWSI", "NMDI"]
 CLOUD_PROB_THRESHOLD = 40
 EXPORT_SCALE = 10
 EXPORT_CRS = "EPSG:4326"
+
+# Période glissante : dernier mois
 today_utc = datetime.now(timezone.utc).date()
-END_DATE  = ee.Date(str(today_utc))
-START_DATE = ee.Date(str(today_utc - timedelta(days=30)))
+END_DATE  = ee.Date(str(today_utc))                       # J
+START_DATE = ee.Date(str(today_utc - timedelta(days=30))) # J-30
+
 empty_img = (
     ee.Image.constant([-32767] * len(INDICES))
     .rename(INDICES)
@@ -91,7 +105,7 @@ def drv_del(fid):
         _retry(lambda: drv.files().delete(fileId=fid).execute())
     except HttpError as e:
         if e.resp.status not in (403, 404):
-            raise
+            raise  # sinon on ignore (pas propriétaire etc.)
 
 def drv_download(fid, path):
     with open(path, "wb") as h:
@@ -238,24 +252,23 @@ for site_id in SITE_IDS:
             filled.select(["NDVI", "EVI", "NDRE", "MSAVI", "SIWSI", "NMDI"]).clamp(-1, 1)
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
-        img_clip = bounded.multiply(10000).round().toInt16().clip(geom)
-        # Masque du site, reprojeté à la grille d'export
-        mask_geom = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
+
+        # === Correction stricte NODATA / NUAGES ici ===
+        img_in_site = bounded.multiply(10000).round().toInt16()       # valeurs normales sur le site
+        img_clouds = img_in_site.unmask(-32767)                       # nuages persistants = -32767
+        img_clip = img_clouds.clip(geom)                              # coupe au polygone du site
+        img_final = img_clip.unmask(-32768)                           # hors site = -32768 (bbox)
         export_region = geom.bounds().getInfo()['coordinates']
+
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
-            img_band = img_clip.select(band)
-            # On force -32768 à l'extérieur du site
-            img_export = img_band.where(mask_geom.neq(1), -32768)
-            # On remplace explicitement les pixels nuls (0) restants par -32768 (sécurité)
-            img_export = img_export.where(img_export.eq(0), -32768)
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
-                image=img_export,
+                image=img_final.select(band),
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
-                region=export_region,
+                region=export_region,      # Export sur bbox
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
