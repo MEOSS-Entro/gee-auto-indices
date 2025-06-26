@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 GEE  ->  Drive  ->  SFTP  (multi-sites, 7 indices)
-Gestion stricte du nodata :
-- valeurs réelles sur le site (hors nuages)
-- -32767 = nuages persistants dans le polygone du site
-- -32768 = hors polygone du site (dans la bbox raster)
+Masque strict :
+- NDVI/EVI/… calculés uniquement dans le polygone du site
+- -32767 = nuages persistants (dans le polygone)
+- -32768 = hors polygone (dans la bbox raster)
 """
 
 import os
@@ -25,28 +25,23 @@ from paramiko import Transport, SFTPClient
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# ─────────── Secrets et variables d’environnement ─────────────
 SA_KEY_PATH = os.getenv("SA_KEY_PATH", "sa-key.json")
-
 SFTP_HOST = os.environ["SFTP_HOST"]
 SFTP_PORT = int(os.getenv("SFTP_PORT", 22))
 SFTP_USER = os.environ["SFTP_USER"]
 SFTP_PASS = os.environ["SFTP_PASS"]
 SFTP_DEST = "/Data/PROD"
-
 SMTP_SRV = os.environ["SMTP_SERVER"]
 SMTP_PORT = int(os.environ["SMTP_PORT"])
 SMTP_USR = os.environ["SMTP_USER"]
 SMTP_PWD = os.environ["SMTP_PASS"]
 EMAILS = os.environ["ALERT_EMAILS"].split(",")
 
-# Durées (peuvent être surchargées par secrets GitHub)
 WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))  # 4 h max attente EE
 PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))   # 10 min par export
 FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))   # 30 min .tif Drive
-POLL_EVERY    = 30                                        # s
+POLL_EVERY    = 30
 
-# ─────────── Auth Earth Engine + Drive ─────────────
 creds = service_account.Credentials.from_service_account_file(
     SA_KEY_PATH,
     scopes=[
@@ -58,7 +53,6 @@ creds = service_account.Credentials.from_service_account_file(
 ee.Initialize(credentials=creds, project=creds.project_id)
 drv = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-# ─────────── Paramètres de traitement ─────────────
 SITE_IDS = [
     'projects/gee-flow-meoss/assets/koga',
     'projects/gee-flow-meoss/assets/kibimba',
@@ -246,12 +240,15 @@ for site_id in SITE_IDS:
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
 
-        # ========== Gestion NODATA & masque polygone ==========
-        img_site = bounded.multiply(10000).round().toInt16().unmask(-32767)  # Indices ou -32767 (nuages)
-        mask_site = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
-        img_final = img_site.where(mask_site.neq(1), -32768)  # -32768 HORS polygone
+        # 1. Indices calculés dans le polygone uniquement, -32767 = nuage persistant, -32768 = hors polygone
+        img_site = bounded.multiply(10000).round().toInt16().unmask(-32767)  # Indices dans polygone, nuage=-32767
+        mask_poly = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
+        img_masked = img_site.updateMask(mask_poly)  # 0 hors polygone, valeurs/nuages dans polygone
 
-        export_region = geom.bounds().getInfo()['coordinates']
+        # 2. Crée image pleine bbox à -32768 puis colle img_masked dedans
+        bbox = geom.bounds().getInfo()['coordinates']
+        img_full = ee.Image.constant(-32768).rename(INDICES).toInt16()
+        img_final = img_full.where(img_masked.mask(), img_masked)  # Si masque polygone, prend la valeur, sinon -32768
 
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
@@ -261,7 +258,7 @@ for site_id in SITE_IDS:
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
-                region=export_region,  # bbox !
+                region=bbox,  # BBOX !
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
@@ -331,7 +328,6 @@ for site_id in SITE_IDS:
     all_errs.extend(errs)
     print(f"{site} : {len(sent)} fichiers transférés (Drive conservé)")
 
-# ─────────── Mail de synthèse ─────────────
 body = [
     f"{total_tasks} exports lancés sur {len(SITE_IDS)} sites.",
     f"{len(all_sent)} fichiers transférés :\n- " + "\n- ".join(all_sent),
