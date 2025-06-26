@@ -2,12 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 GEE  ->  Drive  ->  SFTP  (multi-sites, 7 indices)
-
-– génère les composites 10 jours (NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI)
-– START_DATE = aujourd’hui - 30 jours ; END_DATE = aujourd’hui (UTC)
-– vide le dossier Drive de chaque site avant les exports
-– conserve les .tif sur Drive après transfert SFTP
-– envoie un mail récapitulatif
+Gestion stricte du nodata :
+- valeurs réelles sur le site (hors nuages)
+- -32767 = nuages persistants
+- -32768 = hors polygone du site
 """
 
 import os
@@ -253,22 +251,27 @@ for site_id in SITE_IDS:
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
 
-        # === Correction stricte NODATA / NUAGES ici ===
-        img_in_site = bounded.multiply(10000).round().toInt16()       # valeurs normales sur le site
-        img_clouds = img_in_site.unmask(-32767)                       # nuages persistants = -32767
-        img_clip = img_clouds.clip(geom)                              # coupe au polygone du site
-        img_final = img_clip.unmask(-32768)                           # hors site = -32768 (bbox)
+        # ========== Correction nodata stricte ==========
+        # 1. Valeurs sur le polygone, nuages persistants = -32767
+        img_in_site = bounded.multiply(10000).round().toInt16().unmask(-32767)
+
+        # 2. Créer un masque binaire du polygone du site (1=site, 0=hors-site)
+        mask_site = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
+        # 3. Forcer -32768 HORS polygone pour chaque bande
+        img_allbands = img_in_site.where(mask_site.neq(1), -32768)
+
+        # 4. Export sur la **bbox** du polygone (pas le polygone lui-même !)
         export_region = geom.bounds().getInfo()['coordinates']
 
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
-                image=img_final.select(band),
+                image=img_allbands.select(band),
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
-                region=export_region,      # Export sur bbox
+                region=export_region,   # bbox !
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
