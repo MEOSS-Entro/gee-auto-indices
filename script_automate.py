@@ -240,17 +240,18 @@ for site_id in SITE_IDS:
         )
         # Clip sur la géométrie du site pour calcul rapide
         img_clip = bounded.multiply(10000).round().toInt16().clip(geom)
-        # Préparation du masque pour NoData explicitement
+        # Préparation du masque pour NoData explicitement (binaire 1 dans le site, 0 dehors)
         mask_geom = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
-        date_str = mid.format("YYYYMMdd").getInfo()
         # On exporte sur la bounding box du site
         export_region = geom.bounds().getInfo()['coordinates']
+        date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
-            # -32768 hors du site, valeur réelle sur le site, rien d'autre
-            img_band = img_clip.select(band).where(mask_geom.neq(1), -32768)
+            img_band = img_clip.select(band)
+            # On attribue -32768 explicitement hors site
+            img_export = img_band.where(mask_geom.neq(1), -32768)
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
-                image=img_band,
+                image=img_export,
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
