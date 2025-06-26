@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 GEE  ->  Drive  ->  SFTP  (multi-sites, 7 indices)
-Gestion stricte du nodata :
+Gestion stricte du nodata :
 - valeurs réelles sur le site (hors nuages)
-- -32767 = nuages persistants
-- -32768 = hors polygone du site
+- -32767 = nuages persistants dans le polygone du site
+- -32768 = hors polygone du site (dans la bbox raster)
 """
 
 import os
@@ -72,10 +72,9 @@ CLOUD_PROB_THRESHOLD = 40
 EXPORT_SCALE = 10
 EXPORT_CRS = "EPSG:4326"
 
-# Période glissante : dernier mois
 today_utc = datetime.now(timezone.utc).date()
-END_DATE  = ee.Date(str(today_utc))                       # J
-START_DATE = ee.Date(str(today_utc - timedelta(days=30))) # J-30
+END_DATE  = ee.Date(str(today_utc))
+START_DATE = ee.Date(str(today_utc - timedelta(days=30)))
 
 empty_img = (
     ee.Image.constant([-32767] * len(INDICES))
@@ -83,7 +82,6 @@ empty_img = (
     .updateMask(ee.Image.constant(0))
 )
 
-# ─────────── utilitaires Drive (retry réseau) ─────────────
 def _retry(fun, *a, **k):
     for i in range(1, 7):
         try:
@@ -103,7 +101,7 @@ def drv_del(fid):
         _retry(lambda: drv.files().delete(fileId=fid).execute())
     except HttpError as e:
         if e.resp.status not in (403, 404):
-            raise  # sinon on ignore (pas propriétaire etc.)
+            raise
 
 def drv_download(fid, path):
     with open(path, "wb") as h:
@@ -113,7 +111,6 @@ def drv_download(fid, path):
         while not done:
             _, done = _retry(dl.next_chunk)
 
-# ─────────── Fonctions Earth Engine ─────────────
 def mask_cloud_shadow(img):
     prob = ee.Image(img.get("cloud_prob")).select("probability")
     qa = img.select("QA60")
@@ -191,7 +188,6 @@ def dekad_composite(start, end, geom):
         )
     ).set("system:time_start", start.millis())
 
-# ─────────── Aide SFTP ─────────────
 def sftp_mkdirs(sftp, path):
     cur = ""
     for part in [p for p in path.split("/") if p]:
@@ -201,7 +197,6 @@ def sftp_mkdirs(sftp, path):
         except IOError:
             sftp.mkdir(cur)
 
-# ─────────── Boucle principale par site ─────────────
 all_sent, all_errs, total_tasks = [], [], 0
 
 for site_id in SITE_IDS:
@@ -251,27 +246,22 @@ for site_id in SITE_IDS:
             .addBands(filled.select("LAI").clamp(-1, 7))
         )
 
-        # ========== Correction nodata stricte ==========
-        # 1. Valeurs sur le polygone, nuages persistants = -32767
-        img_in_site = bounded.multiply(10000).round().toInt16().unmask(-32767)
-
-        # 2. Créer un masque binaire du polygone du site (1=site, 0=hors-site)
+        # ========== Gestion NODATA & masque polygone ==========
+        img_site = bounded.multiply(10000).round().toInt16().unmask(-32767)  # Indices ou -32767 (nuages)
         mask_site = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
-        # 3. Forcer -32768 HORS polygone pour chaque bande
-        img_allbands = img_in_site.where(mask_site.neq(1), -32768)
+        img_final = img_site.where(mask_site.neq(1), -32768)  # -32768 HORS polygone
 
-        # 4. Export sur la **bbox** du polygone (pas le polygone lui-même !)
         export_region = geom.bounds().getInfo()['coordinates']
 
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
             fname = f"{site}_{band}_{date_str}"
             task = ee.batch.Export.image.toDrive(
-                image=img_allbands.select(band),
+                image=img_final.select(band),
                 description=fname,
                 folder=site,
                 fileNamePrefix=fname,
-                region=export_region,   # bbox !
+                region=export_region,  # bbox !
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
