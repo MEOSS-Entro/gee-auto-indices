@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GEE  ->  Drive  ->  SFTP  (multi-sites, 7 indices)
+GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices)
 – génère les composites 10 jours (NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI)
 – START_DATE = aujourd’hui - 30 jours ; END_DATE = aujourd’hui (UTC)
 – vide le dossier Drive de chaque site avant les exports
-– conserve les .tif sur Drive après transfert SFTP
+– conserve les .tif sur Drive après transfert FTP
 – envoie un mail récapitulatif
 – ATTRIBUTION -32767 aux nuages persistants, -32768 hors polygone site
 """
@@ -23,18 +23,18 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
-from paramiko import Transport, SFTPClient
+from ftplib import FTP
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # ─────────── Secrets et variables d’environnement ───────────────────────────
 SA_KEY_PATH = os.getenv("SA_KEY_PATH", "sa-key.json")
 
-SFTP_HOST = os.environ["SFTP_HOST"]
-SFTP_PORT = int(os.getenv("SFTP_PORT", 22))
-SFTP_USER = os.environ["SFTP_USER"]
-SFTP_PASS = os.environ["SFTP_PASS"]
-SFTP_DEST = "/Data/PROD"
+FTP_HOST = os.environ["FTP_HOST"]
+FTP_PORT = int(os.getenv("FTP_PORT", 21))
+FTP_USER = os.environ["FTP_USER"]
+FTP_PASS = os.environ["FTP_PASS"]
+FTP_DEST = os.environ.get("FTP_DEST", "/upload/PROD")
 
 SMTP_SRV = os.environ["SMTP_SERVER"]
 SMTP_PORT = int(os.environ["SMTP_PORT"])
@@ -191,15 +191,19 @@ def dekad_composite(start, end, geom):
         )
     ).set("system:time_start", start.millis())
 
-# ─────────── Aide SFTP ──────────────────────────────────────────────────────
-def sftp_mkdirs(sftp, path):
-    cur = ""
-    for part in [p for p in path.split("/") if p]:
-        cur += "/" + part
-        try:
-            sftp.listdir(cur)
-        except IOError:
-            sftp.mkdir(cur)
+# ─────────── Aide FTP : création récursive de dossiers ──────────────────────
+def ftp_mkdirs(ftp, path):
+    # Crée récursivement tous les sous-dossiers d'un path
+    dirs = path.strip('/').split('/')
+    pwd = ftp.pwd()
+    for d in dirs:
+        if d not in ftp.nlst():
+            try:
+                ftp.mkd(d)
+            except Exception:
+                pass
+        ftp.cwd(d)
+    ftp.cwd(pwd)
 
 # ─────────── Boucle principale par site ─────────────────────────────────────
 all_sent, all_errs, total_tasks = [], [], 0
@@ -256,7 +260,7 @@ for site_id in SITE_IDS:
         mask_poly = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
         img_masked = img_site.updateMask(mask_poly)
 
-        # 2. Crée image pleine bbox à -32768 puis colle img_masked dedans (CORRIGÉ ICI)
+        # 2. Crée image pleine bbox à -32768 puis colle img_masked dedans
         img_full = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
         img_final = img_full.where(img_masked.mask(), img_masked)
 
@@ -310,29 +314,29 @@ for site_id in SITE_IDS:
             raise RuntimeError(f"{site} : .tif incomplets après {FILE_TIMEOUT//60} min")
         time.sleep(15)
 
-    # Transfert SFTP sans supprimer les .tif du Drive
+    # Transfert FTP sans supprimer les .tif du Drive
     sent, errs = [], []
-    tr = Transport((SFTP_HOST, SFTP_PORT))
-    tr.connect(username=SFTP_USER, password=SFTP_PASS)
-    sftp = SFTPClient.from_transport(tr)
-
-    remote_site = f"{SFTP_DEST.rstrip('/')}/{site}"
-    sftp_mkdirs(sftp, remote_site)
+    ftp = FTP()
+    ftp.connect(FTP_HOST, FTP_PORT)
+    ftp.login(FTP_USER, FTP_PASS)
+    remote_site = f"{FTP_DEST.rstrip('/')}/{site}"
+    ftp_mkdirs(ftp, remote_site)
+    ftp.cwd(remote_site)
 
     for f in ready:
         name, fid = f["name"], f["id"]
         tmp = f"/tmp/{name}"
         drv_download(fid, tmp)
         try:
-            sftp.put(tmp, f"{remote_site}/{name}")
+            with open(tmp, "rb") as fileobj:
+                ftp.storbinary(f'STOR {name}', fileobj)
             sent.append(f"{site}/{name}")
         except Exception as e:
             errs.append((f"{site}/{name}", str(e)))
         finally:
             os.remove(tmp)
 
-    sftp.close()
-    tr.close()
+    ftp.quit()
 
     all_sent.extend(sent)
     all_errs.extend(errs)
@@ -345,14 +349,14 @@ body = [
 ]
 if all_errs:
     body.append(
-        f"{len(all_errs)} erreur(s) SFTP :\n"
+        f"{len(all_errs)} erreur(s) FTP :\n"
         + "\n".join(f"{n} : {e}" for n, e in all_errs)
     )
 
 msg = MIMEMultipart()
 msg["From"] = SMTP_USR
 msg["To"] = ",".join(EMAILS)
-msg["Subject"] = "GEE -> Drive -> SFTP : " + ("Succès" if not all_errs else "Succès (avec erreurs)")
+msg["Subject"] = "GEE -> Drive -> FTP : " + ("Succès" if not all_errs else "Succès (avec erreurs)")
 msg.attach(MIMEText("\n\n".join(body), "plain"))
 
 with smtplib.SMTP(SMTP_SRV, SMTP_PORT) as server:

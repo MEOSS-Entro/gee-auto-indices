@@ -21,11 +21,11 @@ jobs:
       - name: Lancer l’automatisation
         env:
           SA_KEY_PATH:          sa-key.json
-          SFTP_HOST:            ${{ secrets.SFTP_HOST }}
-          SFTP_PORT:            ${{ secrets.SFTP_PORT }}
-          SFTP_USER:            ${{ secrets.SFTP_USER }}
-          SFTP_PASS:            ${{ secrets.SFTP_PASS }}
-          SFTP_DEST_FOLDER:     ${{ secrets.SFTP_DEST_FOLDER }}
+          FTP_HOST:            ${{ secrets.FTP_HOST }}
+          FTP_PORT:            ${{ secrets.FTP_PORT }}
+          FTP_USER:            ${{ secrets.FTP_USER }}
+          FTP_PASS:            ${{ secrets.FTP_PASS }}
+          FTP_DEST_FOLDER:     ${{ secrets.FTP_DEST_FOLDER }}
           SMTP_SERVER:          ${{ secrets.SMTP_SERVER }}
           SMTP_PORT:            ${{ secrets.SMTP_PORT }}
           SMTP_USER:            ${{ secrets.SMTP_USER }}
