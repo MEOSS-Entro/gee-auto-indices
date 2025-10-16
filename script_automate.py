@@ -250,13 +250,18 @@ for site_id in SITE_IDS:
             dekad_composite(d3, d4, geom),
         )
         filled = dek2.where(dek2.mask().Not(), dek1.add(dek3).divide(2))
+
+        # ===== Correction 1 (ordre des bandes conforme à INDICES) =====
         bounded = (
             filled.select(["NDVI", "EVI", "NDRE", "MSAVI", "SIWSI", "NMDI"]).clamp(-1, 1)
             .addBands(filled.select("LAI").clamp(-1, 7))
+            .select(INDICES)  # <—— impose l'ordre: NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI
         )
 
         # 1. Indices calculés dans le polygone uniquement, -32767 = nuage persistant, -32768 = hors polygone
         img_site = bounded.multiply(10000).round().toInt16().unmask(-32767)
+        # (optionnel mais sûr) : img_site = img_site.select(INDICES)
+
         mask_poly = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
         img_masked = img_site.updateMask(mask_poly)
 
@@ -276,6 +281,8 @@ for site_id in SITE_IDS:
                 scale=EXPORT_SCALE,
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
+                fileFormat='GeoTIFF',
+                formatOptions={'noData': -32768}  # ===== Correction 2 : NoData explicite
             )
             task.start(); tasks.append(task); print("Export lancé :", fname)
 
