@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices)
+GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices)  —  Int16 partout
 – génère les composites 10 jours (NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI)
 – START_DATE = aujourd’hui - 30 jours ; END_DATE = aujourd’hui (UTC)
 – vide le dossier Drive de chaque site avant les exports
 – conserve les .tif sur Drive après transfert FTP
 – envoie un mail récapitulatif
-– ATTRIBUTION -32767 aux nuages persistants, -32768 hors polygone site
+– ATTRIBUTION -32767 aux nuages persistants (valeur valide), -32768 hors polygone (NoData GeoTIFF)
+– Échelle d’export : ×10000 → Int16 pour **toutes** les bandes (LAI inclus, borné à 3.2)
 """
 
 import os
@@ -125,7 +126,8 @@ def mask_cloud_shadow(img):
     return img.updateMask(msk).copyProperties(img, ["system:time_start"])
 
 def add_all_indices(img):
-    b = {f"B{i}": img.select(f"B{i}").divide(1e4).toFloat() for i in [2, 3, 4, 5, 6, 8, 11, 12]}
+    b = {f"B{i}": img.select(f"B{i}").divide(1e4).toFloat()
+         for i in [2, 3, 4, 5, 6, 8, 11, 12]}
     ndvi = b["B8"].subtract(b["B4"]).divide(b["B8"].add(b["B4"])).rename("NDVI")
     evi = (
         ee.Image(2.5)
@@ -193,7 +195,6 @@ def dekad_composite(start, end, geom):
 
 # ─────────── Aide FTP : création récursive de dossiers ──────────────────────
 def ftp_mkdirs(ftp, path):
-    # Crée récursivement tous les sous-dossiers d'un path
     dirs = path.strip('/').split('/')
     pwd = ftp.pwd()
     for d in dirs:
@@ -226,9 +227,7 @@ for site_id in SITE_IDS:
         meta = {"name": site, "mimeType": "application/vnd.google-apps.folder"}
         folder_id = _retry(lambda: drv.files().create(body=meta, fields="id").execute())["id"]
 
-    children = drv_list(
-        q=f"'{folder_id}' in parents and trashed=false", fields="files(id)"
-    )
+    children = drv_list(q=f"'{folder_id}' in parents and trashed=false", fields="files(id)")
     for kid in children:
         drv_del(kid["id"])
     print(f"Dossier Drive vidé ({len(children)} fichiers)")
@@ -244,30 +243,32 @@ for site_id in SITE_IDS:
         d4 = d3.advance(10, "day")
         mid = d1.advance(15, "day")
 
-        dek1, dek2, dek3 = (
-            dekad_composite(d1, d2, geom),
-            dekad_composite(d2, d3, geom),
-            dekad_composite(d3, d4, geom),
-        )
+        dek1 = dekad_composite(d1, d2, geom)
+        dek2 = dekad_composite(d2, d3, geom)
+        dek3 = dekad_composite(d3, d4, geom)
+
+        # Remplissage gap (inchangé)
         filled = dek2.where(dek2.mask().Not(), dek1.add(dek3).divide(2))
 
-        # ===== Correction 1 (ordre des bandes conforme à INDICES) =====
-        bounded = (
-            filled.select(["NDVI", "EVI", "NDRE", "MSAVI", "SIWSI", "NMDI"]).clamp(-1, 1)
-            .addBands(filled.select("LAI").clamp(-1, 7))
-            .select(INDICES)  # <—— impose l'ordre: NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI
-        )
+        # ===== Verrou absolu de l'ordre des bandes =====
+        # (1) clamp global ±1
+        bounded_all = filled.select(INDICES).clamp(-1, 1)
+        # (2) LAI borné spécifiquement à [-1, 3.2] puis overwrite de la bande LAI
+        lai_fixed   = filled.select('LAI').clamp(-1, 3.2)
+        bounded     = bounded_all.addBands(lai_fixed, overwrite=True).select(INDICES)
 
-        # 1. Indices calculés dans le polygone uniquement, -32767 = nuage persistant, -32768 = hors polygone
-        img_site = bounded.multiply(10000).round().toInt16().unmask(-32767)
-        # (optionnel mais sûr) : img_site = img_site.select(INDICES)
+        # ===== Mise à l'échelle commune ×10000 → Int16 (LAI inclus) =====
+        scaled = bounded.multiply(10000.0).round()
 
-        mask_poly = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
+        # 1) Indices calculés dans le polygone uniquement
+        #    -32767 = nuage persistant (valeur valide, pas NoData)
+        img_site   = scaled.unmask(-32767)
+        mask_poly  = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
         img_masked = img_site.updateMask(mask_poly)
 
-        # 2. Crée image pleine bbox à -32768 puis colle img_masked dedans
-        img_full = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
-        img_final = img_full.where(img_masked.mask(), img_masked)
+        # 2) Image pleine bbox à -32768 (NoData) puis collage par masque
+        img_full  = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
+        img_final = img_full.where(img_masked.mask(), img_masked.toInt16())
 
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
@@ -282,7 +283,7 @@ for site_id in SITE_IDS:
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
                 fileFormat='GeoTIFF',
-                formatOptions={'noData': -32768}  # ===== Correction 2 : NoData explicite
+                formatOptions={'noData': -32768}  # NoData explicite pour QGIS/GDAL
             )
             task.start(); tasks.append(task); print("Export lancé :", fname)
 
@@ -294,12 +295,7 @@ for site_id in SITE_IDS:
     t0 = time.time()
     while pending and time.time() - t0 < site_wait:
         for tid, t in list(pending.items()):
-            if t.status()["state"] in (
-                "COMPLETED",
-                "FAILED",
-                "CANCELLED",
-                "CANCEL_REQUESTED",
-            ):
+            if t.status()["state"] in ("COMPLETED", "FAILED", "CANCELLED", "CANCEL_REQUESTED"):
                 pending.pop(tid)
         if pending:
             time.sleep(POLL_EVERY)
