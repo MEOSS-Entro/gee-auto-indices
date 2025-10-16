@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices)  —  Int16 partout
+GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices) — Int16 partout
 – génère les composites 10 jours (NDVI, EVI, LAI, NDRE, MSAVI, SIWSI, NMDI)
 – START_DATE = aujourd’hui - 30 jours ; END_DATE = aujourd’hui (UTC)
 – vide le dossier Drive de chaque site avant les exports
 – conserve les .tif sur Drive après transfert FTP
 – envoie un mail récapitulatif
 
-CONVENTIONS DE VALEURS :
-– -32767 = NUAGES PERSISTANTS (valeur valide, à afficher si besoin)
-– -32168 = NoData (HORS POLYGONE)  ➜ déclaré aussi en métadonnée GeoTIFF
-– Échelle d’export : ×10000 → Int16 pour TOUTES les bandes (LAI inclus, borné 3.2)
+Conventions:
+- -32767 : nuages persistants (valeur valide, non NoData)
+- -32768 : NoData (hors polygone), défini dans l’image ET la métadonnée GeoTIFF
+- Échelle : ×10000 → Int16 pour toutes les bandes (LAI borné à 3.2 pour éviter de saturer int16 avec 32767)
 """
 
 import os
@@ -46,10 +46,10 @@ SMTP_USR = os.environ["SMTP_USER"]
 SMTP_PWD = os.environ["SMTP_PASS"]
 EMAILS = os.environ["ALERT_EMAILS"].split(",")
 
-WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))  # 4 h max attente EE
-PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))   # 10 min par export
-FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))   # 30 min .tif Drive
-POLL_EVERY    = 30                                        # s
+WAIT_TIME     = int(os.getenv("WAIT_TIME",     14_400))  # 4 h
+PER_TASK_WAIT = int(os.getenv("PER_TASK_WAIT",   900))   # 10 min / export
+FILE_TIMEOUT  = int(os.getenv("FILE_TIMEOUT",  1_800))   # 30 min
+POLL_EVERY    = 30
 
 # ─────────── Auth Earth Engine + Drive ──────────────────────────────────────
 creds = service_account.Credentials.from_service_account_file(
@@ -81,8 +81,9 @@ today_utc = datetime.now(timezone.utc).date()
 END_DATE  = ee.Date(str(today_utc))                       # J
 START_DATE = ee.Date(str(today_utc - timedelta(days=30))) # J-30
 
+# Image vide (masquée) pour garder l’entête des bandes
 empty_img = (
-    ee.Image.constant([-32767] * len(INDICES))  # masque = 0 ⇒ invisible, sert juste d’entête
+    ee.Image.constant([-32767] * len(INDICES))
     .rename(INDICES)
     .updateMask(ee.Image.constant(0))
 )
@@ -250,27 +251,31 @@ for site_id in SITE_IDS:
         dek2 = dekad_composite(d2, d3, geom)
         dek3 = dekad_composite(d3, d4, geom)
 
-        # Remplissage gap (inchangé)
+        # Gap-fill central (inchangé)
         filled = dek2.where(dek2.mask().Not(), dek1.add(dek3).divide(2))
 
         # ===== Verrou absolu de l'ordre des bandes =====
-        # (1) clamp global ±1 sur toutes les bandes
+        # (1) clamp global ±1 pour toutes les bandes
         bounded_all = filled.select(INDICES).clamp(-1, 1)
-        # (2) LAI borné spécifiquement à [-1, 3.2], puis overwrite de la bande LAI
+        # (2) LAI borné à [-1, 3.2] et overwrite
         lai_fixed   = filled.select('LAI').clamp(-1, 3.2)
         bounded     = bounded_all.addBands(lai_fixed, overwrite=True).select(INDICES)
 
-        # ===== Mise à l'échelle commune ×10000 → Int16 (LAI inclus) =====
-        scaled = bounded.multiply(10000.0).round()
+        # ===== Mise à l'échelle ×10000 → Int16 (LAI inclus) =====
+        scaled = bounded.multiply(10000.0).round()  # reste en float jusqu'au collage
 
-        # 1) Indices calculés dans le polygone uniquement
-        #    -32767 = nuage persistant (valeur valide, PAS NoData)
+        # 1) À l'intérieur de la ROI : vraies valeurs ; ailleurs : masqué
+        #    Unmask à -32767 UNIQUEMENT pour les trous persistants à l'intérieur (valeur valide)
         img_site   = scaled.unmask(-32767)
+
+        # Masque strict de la ROI (1 sur ROI, 0 hors ROI)
         mask_poly  = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
         img_masked = img_site.updateMask(mask_poly)
 
-        # 2) Image pleine bbox à -32168 (NoData) puis collage par masque
-        img_full  = ee.Image.constant([-32168] * len(INDICES)).rename(INDICES).toInt16()
+        # 2) Image pleine bbox à -32768 (NoData), puis collage par MASQUE (where)
+        #    => À l’intérieur de la ROI : valeurs réelles
+        #       À l’extérieur de la ROI (mais dans la bbox) : -32768 (NoData)
+        img_full  = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
         img_final = img_full.where(img_masked.mask(), img_masked.toInt16())
 
         date_str = mid.format("YYYYMMdd").getInfo()
@@ -286,8 +291,8 @@ for site_id in SITE_IDS:
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
                 fileFormat='GeoTIFF',
-                # Déclaration explicite du NoData dans la MÉTADONNÉE GeoTIFF :
-                formatOptions={'noData': -32168}
+                # Déclare le NoData dans la métadonnée GeoTIFF
+                formatOptions={'noData': -32768}
             )
             task.start(); tasks.append(task); print("Export lancé :", fname)
 
