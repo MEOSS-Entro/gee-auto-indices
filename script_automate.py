@@ -7,8 +7,11 @@ GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices)  —  Int16 partout
 – vide le dossier Drive de chaque site avant les exports
 – conserve les .tif sur Drive après transfert FTP
 – envoie un mail récapitulatif
-– ATTRIBUTION -32767 aux nuages persistants (valeur valide), -32768 hors polygone (NoData GeoTIFF)
-– Échelle d’export : ×10000 → Int16 pour **toutes** les bandes (LAI inclus, borné à 3.2)
+
+CONVENTIONS DE VALEURS :
+– -32767 = NUAGES PERSISTANTS (valeur valide, à afficher si besoin)
+– -32168 = NoData (HORS POLYGONE)  ➜ déclaré aussi en métadonnée GeoTIFF
+– Échelle d’export : ×10000 → Int16 pour TOUTES les bandes (LAI inclus, borné 3.2)
 """
 
 import os
@@ -79,7 +82,7 @@ END_DATE  = ee.Date(str(today_utc))                       # J
 START_DATE = ee.Date(str(today_utc - timedelta(days=30))) # J-30
 
 empty_img = (
-    ee.Image.constant([-32767] * len(INDICES))
+    ee.Image.constant([-32767] * len(INDICES))  # masque = 0 ⇒ invisible, sert juste d’entête
     .rename(INDICES)
     .updateMask(ee.Image.constant(0))
 )
@@ -251,9 +254,9 @@ for site_id in SITE_IDS:
         filled = dek2.where(dek2.mask().Not(), dek1.add(dek3).divide(2))
 
         # ===== Verrou absolu de l'ordre des bandes =====
-        # (1) clamp global ±1
+        # (1) clamp global ±1 sur toutes les bandes
         bounded_all = filled.select(INDICES).clamp(-1, 1)
-        # (2) LAI borné spécifiquement à [-1, 3.2] puis overwrite de la bande LAI
+        # (2) LAI borné spécifiquement à [-1, 3.2], puis overwrite de la bande LAI
         lai_fixed   = filled.select('LAI').clamp(-1, 3.2)
         bounded     = bounded_all.addBands(lai_fixed, overwrite=True).select(INDICES)
 
@@ -261,13 +264,13 @@ for site_id in SITE_IDS:
         scaled = bounded.multiply(10000.0).round()
 
         # 1) Indices calculés dans le polygone uniquement
-        #    -32767 = nuage persistant (valeur valide, pas NoData)
+        #    -32767 = nuage persistant (valeur valide, PAS NoData)
         img_site   = scaled.unmask(-32767)
         mask_poly  = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
         img_masked = img_site.updateMask(mask_poly)
 
-        # 2) Image pleine bbox à -32768 (NoData) puis collage par masque
-        img_full  = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
+        # 2) Image pleine bbox à -32168 (NoData) puis collage par masque
+        img_full  = ee.Image.constant([-32168] * len(INDICES)).rename(INDICES).toInt16()
         img_final = img_full.where(img_masked.mask(), img_masked.toInt16())
 
         date_str = mid.format("YYYYMMdd").getInfo()
@@ -283,7 +286,8 @@ for site_id in SITE_IDS:
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
                 fileFormat='GeoTIFF',
-                formatOptions={'noData': -32768}  # NoData explicite pour QGIS/GDAL
+                # Déclaration explicite du NoData dans la MÉTADONNÉE GeoTIFF :
+                formatOptions={'noData': -32168}
             )
             task.start(); tasks.append(task); print("Export lancé :", fname)
 
