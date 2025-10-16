@@ -10,8 +10,8 @@ GEE  ->  Drive  ->  FTP  (multi-sites, 7 indices) — Int16 partout
 
 Conventions:
 - -32767 : nuages persistants (valeur valide, non NoData)
-- -32768 : NoData (hors polygone), défini dans l’image ET la métadonnée GeoTIFF
-- Échelle : ×10000 → Int16 pour toutes les bandes (LAI borné à 3.2 pour éviter de saturer int16 avec 32767)
+- -32768 : NoData (hors polygone), écrit dans les pixels et déclaré en métadonnée
+- Échelle : ×10000 → Int16 pour toutes les bandes (LAI borné à 3.2 pour éviter 32767)
 """
 
 import os
@@ -254,29 +254,24 @@ for site_id in SITE_IDS:
         # Gap-fill central (inchangé)
         filled = dek2.where(dek2.mask().Not(), dek1.add(dek3).divide(2))
 
-        # ===== Verrou absolu de l'ordre des bandes =====
-        # (1) clamp global ±1 pour toutes les bandes
-        bounded_all = filled.select(INDICES).clamp(-1, 1)
-        # (2) LAI borné à [-1, 3.2] et overwrite
-        lai_fixed   = filled.select('LAI').clamp(-1, 3.2)
+        # ===== Verrou ordre des bandes + bornage =====
+        bounded_all = filled.select(INDICES).clamp(-1, 1)   # clamp global ±1
+        lai_fixed   = filled.select('LAI').clamp(-1, 3.2)   # LAI borné à 3.2
         bounded     = bounded_all.addBands(lai_fixed, overwrite=True).select(INDICES)
 
-        # ===== Mise à l'échelle ×10000 → Int16 (LAI inclus) =====
-        scaled = bounded.multiply(10000.0).round()  # reste en float jusqu'au collage
+        # ===== Mise à l'échelle ×10000 (LAI inclus) → valeurs float prêtes pour collage =====
+        scaled = bounded.multiply(10000.0).round()
 
-        # 1) À l'intérieur de la ROI : vraies valeurs ; ailleurs : masqué
-        #    Unmask à -32767 UNIQUEMENT pour les trous persistants à l'intérieur (valeur valide)
-        img_site   = scaled.unmask(-32767)
+        # ---------- Emprise (bbox) à -32768 (NoData) ----------
+        img_full = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
+        # Masque strict de la ROI : 1 à l'intérieur, 0 à l'extérieur
+        mask_poly = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
 
-        # Masque strict de la ROI (1 sur ROI, 0 hors ROI)
-        mask_poly  = ee.Image.constant(1).clip(geom).reproject(EXPORT_CRS, None, EXPORT_SCALE)
-        img_masked = img_site.updateMask(mask_poly)
+        # À l’intérieur de la ROI : vraies valeurs (trous persistants = -32767, valeur valide)
+        img_roi = scaled.unmask(-32767).updateMask(mask_poly)
 
-        # 2) Image pleine bbox à -32768 (NoData), puis collage par MASQUE (where)
-        #    => À l’intérieur de la ROI : valeurs réelles
-        #       À l’extérieur de la ROI (mais dans la bbox) : -32768 (NoData)
-        img_full  = ee.Image.constant([-32768] * len(INDICES)).rename(INDICES).toInt16()
-        img_final = img_full.where(img_masked.mask(), img_masked.toInt16())
+        # Collage : condition = ROI (mask_poly). Hors ROI => -32768, dans ROI => valeurs
+        img_final = img_full.where(mask_poly, img_roi.toInt16())
 
         date_str = mid.format("YYYYMMdd").getInfo()
         for band in INDICES:
@@ -291,7 +286,7 @@ for site_id in SITE_IDS:
                 crs=EXPORT_CRS,
                 maxPixels=1e13,
                 fileFormat='GeoTIFF',
-                # Déclare le NoData dans la métadonnée GeoTIFF
+                # Déclare NoData en métadonnée GeoTIFF (QGIS/GDAL)
                 formatOptions={'noData': -32768}
             )
             task.start(); tasks.append(task); print("Export lancé :", fname)
