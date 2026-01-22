@@ -2,6 +2,7 @@ name: Keepalive (monthly)
 
 on:
   schedule:
+    # Tous les mois, le 1er à 03:15 UTC (horaire volontairement différent de ton autre cron)
     - cron: "15 3 1 * *"
   workflow_dispatch:
 
@@ -24,13 +25,9 @@ jobs:
           mkdir -p .github
           date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
 
-      - name: Commit & push if changed (including untracked)
+      - name: Commit & push if changed
         run: |
-          # Ajoute le fichier (même s'il est nouveau) pour qu'il soit pris en compte
-          git add .github/keepalive.txt
-
-          # Si rien à commiter (y compris nouveaux fichiers), on sort
-          if [[ -z "$(git status --porcelain)" ]]; then
+          if git diff --quiet; then
             echo "No changes to commit."
             exit 0
           fi
@@ -38,5 +35,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          git add .github/keepalive.txt
           git commit -m "chore: keepalive"
           git push
