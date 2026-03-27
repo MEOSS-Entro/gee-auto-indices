@@ -2,7 +2,7 @@ name: Keepalive (monthly)
 
 on:
   schedule:
-    # Tous les mois, le 1er à 03:15 UTC (horaire volontairement différent de ton autre cron)
+    # Tous les mois, le 1er à 03:15 UTC (horaire volontairement différent de ton autre cron) à voir
     - cron: "15 3 1 * *"
   workflow_dispatch:
 
